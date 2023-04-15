@@ -1,6 +1,9 @@
 {
   "ExpandedNodes": [
-    ""
+    "",
+    "\\static",
+    "\\template"
   ],
+  "SelectedNode": "\\template\\add_user.html",
   "PreviewInSolutionExplorer": false
 }

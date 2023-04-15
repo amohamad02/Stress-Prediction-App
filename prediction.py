@@ -16,7 +16,7 @@ le.fit(train['condition'])
 train['condition'] = le.transform(train['condition'])
 test['condition'] = le.transform(test['condition'])
 
-reduced_train = train[["MEAN_RR", "pNN50", "RMSSD", "HR", "condition"]]
+reduced_train = train[["MEAN_RR", "pNN50", "RMSSD", "SDRR", "HR", "condition"]]
 
 X_train = reduced_train.iloc[:,:-1]
 y_train = reduced_train.iloc[:,-1]

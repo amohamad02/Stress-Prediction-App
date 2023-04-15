@@ -3,6 +3,8 @@ from flask_login import LoginManager, UserMixin, login_user, login_required, log
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from dateutil import parser
+from sqlalchemy import func
+from sqlalchemy import and_
 import pickle
 
 app = Flask(__name__, template_folder='template', static_url_path='/static')
@@ -20,6 +22,23 @@ db = SQLAlchemy(app)
 
 # Load prediction model
 model = pickle.load(open('model.pkl', 'rb'))
+
+#stress level function
+def stress_range(rmssd, sdrr):
+    stress_index = (1 - (rmssd / (sdrr + rmssd))) * 100
+    stress_level = ""
+    if stress_index < 20:
+        stress_level = "Stress level: 0-20%"
+    elif stress_index < 40:
+        stress_level = "Stress level: 20-40%"
+    elif stress_index < 60:
+        stress_level = "Stress level: 40-60%"
+    elif stress_index < 80:
+        stress_level = "Stress level: 60-80%"
+    else:
+        stress_level = "Stress level: 80-100%"
+    return stress_level
+
 
 
 class UserAuth(UserMixin):
@@ -54,6 +73,7 @@ class HRV_Stat(db.Model):
     mean_rr = db.Column(db.Float)
     pNN50 = db.Column(db.Float)
     RMSSD = db.Column(db.Float)
+    SDRR = db.Column(db.Float)
     HR = db.Column(db.Float)
     date = db.Column(db.Date, default=datetime.utcnow)
 
@@ -99,18 +119,22 @@ def dashboard():
     users = User.query.all()
     model = pickle.load(open('model.pkl', 'rb'))
     users_with_status = []
-    
-    for user in users:
-        user_data = HRV_Stat.query.filter_by(user_id=user.id).order_by(HRV_Stat.date.desc()).all()
-        if len(user_data) > 0:
-            latest_hrv_record = user_data[0] # extract the latest HRV record for the user
-            prediction = model.predict([[latest_hrv_record.mean_rr, latest_hrv_record.pNN50, latest_hrv_record.RMSSD, latest_hrv_record.HR]])
-            is_stressed = prediction[0] == 1
-            users_with_status.append((user, is_stressed))
-        else:
-            users_with_status.append((user, None))
 
-    return render_template("dashboard.html", users=users_with_status)
+    # subquery to get the latest HRV record for each user
+    latest_hrv_records = db.session.query(HRV_Stat.user_id, func.max(HRV_Stat.date).label('latest_date')).group_by(HRV_Stat.user_id).subquery()
+
+    for user in users:
+        latest_hrv_record = HRV_Stat.query.filter_by(user_id=user.id).join(latest_hrv_records, and_(HRV_Stat.user_id == latest_hrv_records.c.user_id, HRV_Stat.date == latest_hrv_records.c.latest_date)).first()
+        if latest_hrv_record:
+            prediction = model.predict([[latest_hrv_record.mean_rr, latest_hrv_record.pNN50, latest_hrv_record.RMSSD, latest_hrv_record.SDRR, latest_hrv_record.HR]])
+            is_stressed = prediction[0] == 1
+            users_with_status.append((user, is_stressed, latest_hrv_record))
+        else:
+            users_with_status.append((user, None, None))
+
+    return render_template("dashboard.html", users=users_with_status, stress_range=stress_range)
+
+
 
 
 @app.route('/add_user', methods=['GET', 'POST'])
@@ -129,6 +153,14 @@ def add_user():
 
     return render_template('add_user.html')
 
+@app.route('/user/<int:id>/delete', methods=['DELETE', 'POST', 'GET'])
+def delete_user(id):
+    user = User.query.get_or_404(id)
+    db.session.delete(user)
+    db.session.commit()
+    flash('User deleted successfully!', 'success')
+    return redirect(url_for('dashboard'))
+
 @app.route('/add_hrv/<int:user_id>', methods=['GET', 'POST'])
 def add_hrv(user_id):
     if request.method == 'POST':
@@ -138,9 +170,10 @@ def add_hrv(user_id):
         mean_rr = request.form['mean_rr']
         pNN50 = request.form['pNN50']
         RMSSD = request.form['RMSSD']
+        SDRR = request.form['SDRR']
         HR = request.form['HR']
 
-        hrv_stat = HRV_Stat(date=date_obj, mean_rr=mean_rr, pNN50=pNN50, RMSSD=RMSSD, HR=HR, user_id=user_id)
+        hrv_stat = HRV_Stat(date=date_obj, mean_rr=mean_rr, pNN50=pNN50, RMSSD=RMSSD, SDRR=SDRR, HR=HR, user_id=user_id)
         db.session.add(hrv_stat)
         db.session.commit()
 
@@ -171,7 +204,7 @@ def predict2():
     PNN50 = HRV_STAT.pNN50
     RMSSD = HRV_STAT.RMSSD
     HR = HRV_STAT.HR
-    prediction = model.predict([[MEAN_RR, PNN50, RMSSD, HR]])
+    prediction = model.predict([[MEAN_RR, PNN50, RMSSD, SDRR, HR]])
     output = prediction[0]
     if output == 1:
         return render_template('index.html', prediction_text2='This Person is Stressed')
@@ -188,11 +221,10 @@ def user(user_id):
         mean_rr = request.form['mean_rr']
         pNN50 = request.form['pNN50']
         RMSSD = request.form['RMSSD']
+        SDRR = request.form['SDRR']
         HR = request.form['HR']
-        TP = request.form['TP']
-        VLF = request.form['VLF']
 
-        hrv_stat = HRV_Stat(mean_rr=mean_rr, pNN50=pNN50, RMSSD=RMSSD, HR=HR, TP=TP, VLF=VLF, user_id=user_id)
+        hrv_stat = HRV_Stat(mean_rr=mean_rr, pNN50=pNN50, RMSSD=RMSSD, SDRR=SDRR, HR=HR, user_id=user_id)
         db.session.add(hrv_stat)
         db.session.commit()
 
@@ -200,9 +232,9 @@ def user(user_id):
 
     if len(user_data) > 0:
         latest_hrv_record = user_data[0] # extract the latest HRV record for the user
-        prediction = model.predict([[latest_hrv_record.mean_rr, latest_hrv_record.pNN50, latest_hrv_record.RMSSD, latest_hrv_record.HR]])
+        prediction = model.predict([[latest_hrv_record.mean_rr, latest_hrv_record.pNN50, latest_hrv_record.RMSSD, latest_hrv_record.SDRR, latest_hrv_record.HR]])
         is_stressed = prediction[0] == 1
-        return render_template('user.html', user=user, user_data=user_data, model=model, is_stressed=is_stressed)
+        return render_template('user.html', user=user, user_data=user_data, model=model, is_stressed=is_stressed, stress_range=stress_range, hrv = latest_hrv_record)
     else:
         return render_template('user.html', user=user, user_data=user_data, model=model)
 
